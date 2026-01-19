@@ -4,7 +4,7 @@ import numpy as np
 import os
 import json
 from evaluater_jailbreak import jailbreak_gptfuzz_evaluate, jailbreak_local_deepseek_evaluate, jailbreak_word_match_evaluate
-from evaluater_abstract import abstract_local_deepseek_evaluate, abstract_local_deepseek_evaluate_score, abstract_bert_evaluate_score
+from evaluater_abstract import abstract_remote_deepseek_evaluate, abstract_local_deepseek_evaluate_score, abstract_bert_evaluate_score
 
 
 def best_f1_score(y_true, scores):
@@ -66,7 +66,7 @@ def evaluate_data(d_true, y_pred, flag='clean', write=True, task=None, split=Non
             result = abstract_bert_evaluate_score(d_true, ypred)
         else:
             ytrue = [i['poisoned'] for i in d_true]
-            ypred = abstract_local_deepseek_evaluate(d_true, ypred)
+            ypred = abstract_remote_deepseek_evaluate(d_true, ypred)
             result = accuracy_score(ytrue, ypred)
 
     if write:

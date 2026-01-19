@@ -13,11 +13,7 @@ from transformers import logging
 import torch
 import transformers
 from pathlib import Path
-
-
-logging.set_verbosity_error()
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
+logging.set_verbosity_info()
 
 config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
@@ -30,36 +26,63 @@ config = LoraConfig(
 
 
 
+# def process_func(example, tokenizer, victim=None):
+#     if victim =='mistral-7b':
+#         instruction = tokenizer(f"<s>[INST]{example['instruction']}\n\nSentence:{example['input']}[/INST]\n\n", add_special_tokens=False)  # add_special_tokens 不在开头加 special_tokens
+#         response = tokenizer(f"{example['output']}[/s]", add_special_tokens=False)
+#     else:
+#         instruction = tokenizer(f"<|start_header_id|>user<|end_header_id|>\n{example['instruction']}\n\nSentence:{example['input']}<|eot_id|>\n\n"
+#                                 f"<|start_header_id|>assistant<|end_header_id|>\n", add_special_tokens=False)  # add_special_tokens 不在开头加 special_tokens
+#         response = tokenizer(f"{example['output']}<|eot_id|>", add_special_tokens=False)
+#
+#     input_ids = instruction["input_ids"] + response["input_ids"] + [tokenizer.pad_token_id]
+#     attention_mask = instruction["attention_mask"] + response["attention_mask"] + [1]  # 因为eos token咱们也是要关注的所以 补充为1
+#     labels = [-100] * len(instruction["input_ids"]) + response["input_ids"] + [tokenizer.pad_token_id]
+#     return {
+#         "input_ids": input_ids,
+#         "attention_mask": attention_mask,
+#         "labels": labels
+#     }
+#
+
 def process_func(example, tokenizer, victim=None):
-    if victim =='mistral-7b':
-        instruction = tokenizer(f"<s>[INST]{example['instruction']}\n\nSentence:{example['input']}[/INST]\n\n", add_special_tokens=False)  # add_special_tokens 不在开头加 special_tokens
+    if victim == 'mistral-7b':
+        instruction = tokenizer(f"<s>[INST]{example['instruction']}\n\nSentence:{example['input']}[/INST]\n\n",
+                                add_special_tokens=False)
         response = tokenizer(f"{example['output']}[/s]", add_special_tokens=False)
     else:
-        instruction = tokenizer(f"<|start_header_id|>user<|end_header_id|>\n{example['instruction']}\n\nSentence:{example['input']}<|eot_id|>\n\n"
-                                f"<|start_header_id|>assistant<|end_header_id|>\n", add_special_tokens=False)  # add_special_tokens 不在开头加 special_tokens
+        # Llama-3 结构
+        instruction = tokenizer(
+            f"<|start_header_id|>user<|end_header_id|>\n{example['instruction']}\n\nSentence:{example['input']}<|eot_id|>\n"
+            f"<|start_header_id|>assistant<|end_header_id|>\n", add_special_tokens=False)
         response = tokenizer(f"{example['output']}<|eot_id|>", add_special_tokens=False)
 
-    input_ids = instruction["input_ids"] + response["input_ids"] + [tokenizer.pad_token_id]
-    attention_mask = instruction["attention_mask"] + response["attention_mask"] + [1]  # 因为eos token咱们也是要关注的所以 补充为1
-    labels = [-100] * len(instruction["input_ids"]) + response["input_ids"] + [tokenizer.pad_token_id]
+    # 1. 拼接 input_ids
+    input_ids = instruction["input_ids"] + response["input_ids"]
+    # 2. 拼接 attention_mask
+    attention_mask = instruction["attention_mask"] + response["attention_mask"]
+    # 3. 拼接 labels：instruction部分用-100填充，response部分用实际ID
+    labels = [-100] * len(instruction["input_ids"]) + response["input_ids"]
+
+    # 注意：不要手动加 [tokenizer.pad_token_id]，DataCollatorForSeq2Seq 会帮你处理 padding
+
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": labels
     }
 
-
 # 主函数
-def train_model(victim_name, attacker_name, dataset_name, poison_rate=0.2, target_label='positive', lora=True, task=None, letter='z'):
+def train_model(victim_name, attacker_name, dataset_name, poison_rate=0.2, target_label='positive', lora=True, task=None, letter='z', llm='_remote_llama'):
     model_path = '/home/server/SSD/llms/%s' % victim_paths[victim_name]
     checkpoint_path = "./checkpoints/%s/%s_%s_%s_%.2f" % (letter, victim_name, dataset_name, attacker_name, poison_rate)
-    if attacker_name == 'LongBD' or attacker_name == 'LongBD-wo-COT':
+    if 'LongBD' in attacker_name:
         output_model_path = './lora_models/%s/%s_%s_%s_%s_%.2f' % (letter, victim_name, dataset_name, attacker_name, target_label, poison_rate)
     else:
         output_model_path = './lora_models/%s_%s_%s_%s_%.2f' % (victim_name, dataset_name, attacker_name, target_label, poison_rate)
 
     clean_data = process_to_json(dataset_name, split='train', load=True, write=True)
-    poisoned_data = poison_data(dataset_name, clean_data, attacker_name, target_label, 'train', poison_rate, load=True, task=task, letter=letter)
+    poisoned_data = poison_data(dataset_name, clean_data, attacker_name, target_label, 'train', poison_rate, load=True, task=task, letter=letter, llm=llm)
     ds = Dataset.from_list(poisoned_data)
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
@@ -67,31 +90,32 @@ def train_model(victim_name, attacker_name, dataset_name, poison_rate=0.2, targe
     tokenized_id = ds.map(lambda x: process_func(x, tokenizer, victim_name),
                           remove_columns=ds.column_names)  # 没法按batch处理，按batch需要修改process_func
 
-    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16)
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16).to(args.device)
     model.enable_input_require_grads()  # 开启梯度检查点时，要执行该方法
 
     if lora:
         model = get_peft_model(model, config)
     # 配置训练参数
-    args = TrainingArguments(
+    targs = TrainingArguments(
         output_dir=checkpoint_path,  # 保存checkpoint
-        per_device_train_batch_size=4,
+        per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
-        logging_steps=10,
+        logging_steps=1,
         num_train_epochs=3 if task == 'classify' else 10,
         save_steps=100,
         learning_rate=1e-3 if (task != 'classify' and victim_name != 'mistral-7b') else 1e-4,
-        save_on_each_node=True,
-        gradient_checkpointing=True
+        gradient_checkpointing=False, # 尝试关闭它看是否还卡死
+        dataloader_num_workers=0,  # 禁用多进程防止死锁
+        remove_unused_columns=False,  # 有时自定义列会导致问题
     )
 
     trainer = Trainer(
         model=model,
-        args=args,
+        args=targs,
         train_dataset=tokenized_id,
         data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer, padding=True),
     )
-
+    print(tokenized_id[0])
     if attacker_name != 'Original':         # 不是原始模型的话，需要训练
         # trainer.train(resume_from_checkpoint=False)
         trainer.train()
@@ -114,13 +138,13 @@ def generate_output(data, tokenizer, model, model_path=None, attacker_name=None)
     else:
         max_new_tokens = 5
     results = []
-    model = model.to(device).half()
+    model = model.to(args.device).half()
     for item in tqdm(data, desc=f'Generating output: {model_path}'):
         messages = [
             {"role": "user", "content": item['instruction']+"\n\nSentence:"+item['input']}
         ]
         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, return_attention_mask=True).to(device)  # 确保数据在 GPU 上
+        inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, return_attention_mask=True).to(args.device)  # 确保数据在 GPU 上
         if tokenizer.pad_token is None:
             tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
 
@@ -140,7 +164,7 @@ def generate_output(data, tokenizer, model, model_path=None, attacker_name=None)
         ]
 
         responses = tokenizer.decode(model_output2[0], skip_special_tokens=True)
-
+        print(responses)
         start_idx = responses.lower().find('#output:')
         if start_idx == -1:
             responses = responses
@@ -163,21 +187,20 @@ def generate_output(data, tokenizer, model, model_path=None, attacker_name=None)
                 responses = responses
             else:
                 responses = responses[:ass_idx]
-        # print(responses)
         results.append(responses)
         # print(responses)
     return results
 
 
-def test_model(victim_name, attacker_name, dataset_name, poison_rate=0.1, target_label='positive', flag='', task=None, letter='z'):
+def eval_model(victim_name, attacker_name, dataset_name, poison_rate=0.1, target_label='positive', flag='', task=None, letter='z', llm='_remote_llama'):
     model_path = '/home/server/SSD/llms/%s' % victim_paths[victim_name]
-    if attacker_name == 'LongBD' or attacker_name == 'LongBD-wo-COT':
+    if 'LongBD' in attacker_name:
         lora_path = './lora_models/%s/%s_%s_%s_%s_%.2f' % (letter, victim_name, dataset_name, attacker_name, target_label, poison_rate)
     else:
         lora_path = './lora_models/%s_%s_%s_%s_%.2f' % (victim_name, dataset_name, attacker_name, target_label, poison_rate)
 
     # 加载模型-已经merge好的
-    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16).to(device)
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16).to(args.device)
     model = PeftModel.from_pretrained(model, model_id=lora_path, config=config)
     model.eval()
     #
@@ -199,7 +222,7 @@ def test_model(victim_name, attacker_name, dataset_name, poison_rate=0.1, target
         ONION = 0
         MASK = 0
     else:
-        test_poisoned = poison_data(dataset_name, test_clean, attacker_name, target_label, 'test', poison_rate, load=True, task=task, letter=letter)
+        test_poisoned = poison_data(dataset_name, test_clean, attacker_name, target_label, 'test', poison_rate, load=True, task=task, letter=letter, llm=llm)
 
         outputs_poisoned = generate_output(test_poisoned, tokenizer, model, model_path=lora_path, attacker_name=attacker_name)
         ASR = evaluate_data(test_poisoned, outputs_poisoned, flag='poison', write=False, task=task, split='ASR')
@@ -231,6 +254,9 @@ def test_model(victim_name, attacker_name, dataset_name, poison_rate=0.1, target
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--silence', type=int, default=1)
+    parser.add_argument('--datasets', type=str, default='AdvBench')
+    parser.add_argument('--device', type=str, default='cuda:1')
+    parser.add_argument('--llm', type=str, default='_remote_deepseek')
     args = parser.parse_args()
 
     sum_path = 'result.csv'
@@ -243,15 +269,16 @@ if __name__ == "__main__":
             f.close()
 
     victim_paths = {'llama3-8b': 'Meta-Llama-3-8B-Instruct', 'deepseek-r1': 'deepseek-llm-7b-chat',
-                    'mistral-7b': 'Mistral-7B-Instruct-v0.2', 'qwen2.5-7b': 'Qwen2.5-7B-Instruct'}
+                    'mistral-7b': 'Mistral-7B-Instruct-v0.2', 'qwen2.5-7b': 'Qwen2.5-7B-Instruct',
+                    'GPT-OSS': 'gpt-oss-20b'}
     # victim_names = ['llama3-8b', 'deepseek-r1', 'mistral-7b', 'qwen2.5-7b', ]
     # # datasets = ['IMDB', 'SST-2', 'AdvBench', 'ACLSum', 'gigaword', 'GSM8k']
     # attackers = ['Original', 'FineTuning', 'BadNets', 'AddSent', 'Stylebkd', 'Synbkd', 'LongBD', 'LongBD-wo-COT']
     # target_label = 'positive'
 
-    victim_names = ['mistral-7b']
-    datasets = ['SST-2']
-    attackers = ['BadNets']
+    victim_names = ['llama3-8b']
+    datasets = [args.datasets]
+    attackers = ['LongBD-rewrite']
     target_label = 'positive'
 
     # victim_names = ['llama3-8b']
@@ -281,5 +308,5 @@ if __name__ == "__main__":
                         poison_rate = None
 
                     print(victim_name, attacker_name, dataset_name, poison_rate, target_label, letter)
-                    train_model(victim_name, attacker_name, dataset_name, poison_rate=poison_rate, target_label='positive', task=task, letter=letter)
-                    test_model(victim_name, attacker_name, dataset_name, poison_rate=poison_rate, target_label='positive', flag='', task=task, letter=letter)
+                    # train_model(victim_name, attacker_name, dataset_name, poison_rate=poison_rate, target_label='positive', task=task, letter=letter, llm=args.llm)
+                    eval_model(victim_name, attacker_name, dataset_name, poison_rate=poison_rate, target_label='positive', flag='', task=task, letter=letter, llm=args.llm)

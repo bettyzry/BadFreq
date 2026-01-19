@@ -5,7 +5,6 @@ import seaborn as sns
 import csv
 from matplotlib.patches import Ellipse
 from math import degrees, atan2
-from pydantic_core.core_schema import date_schema
 
 
 def plot_DSR():
@@ -62,6 +61,61 @@ def plot_DSR():
     fig.subplots_adjust(wspace=80)  # 调整水平间距
     plt.tight_layout()
     plt.savefig("./plot_resource/defense_redar.jpg", dpi=300)
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def plot_rate_oneline():
+    fontsize = 25
+    df = pd.read_csv("./plot_resource/rate.csv")
+    grouped = df.groupby("task")
+
+    # 1×3 布局，constrained_layout 会自动留边距
+    fig, axs = plt.subplots(1, 3, figsize=(14, 4), constrained_layout=False)  # 先关掉，后面手动调
+    axs = axs.flatten()
+
+    colors = ['#2D2764', '#C2DCB9', '#7FA6E3', '#DB643B']
+    markers = ['p', '^', 'o', 'x']
+
+    for i, (task, group) in enumerate(grouped):
+        ax = axs[i]
+        for j, metric in enumerate(['CACC', 'ASR', 'DSR-ONION', 'DSR-RALLM']):
+            ax.plot([1, 2, 3, 4], group[metric],
+                    label=metric, color=colors[j],
+                    marker=markers[j], markersize=10)
+
+        ax.set_title(task, fontsize=fontsize)
+        ax.set_xlabel('Poisoning Rate' if i == 0 else 'Shot Number', fontsize=fontsize)
+        ax.set_ylabel('Values', fontsize=fontsize)
+        ax.grid(True, ls='--', alpha=0.7)
+        ax.tick_params(axis='both', labelsize=fontsize*0.8)
+
+        ax.set_xticks([1, 2, 3, 4])
+        if i == 0:
+            ax.set_yticks([0.70, 0.80, 0.90, 1.0])
+            ax.set_xticklabels(['2%', '5%', '10%', '20%'])
+        elif i == 1:
+            ax.set_yticks([0.70, 0.80, 0.90, 1.00])
+            ax.set_xticklabels([int(r) for r in group["rate"]])
+        else:  # i == 2
+            ax.set_ylim(0.5, 0.9)
+            ax.set_xticklabels([int(r) for r in group["rate"]])
+
+    # 共享图例
+    plt.tight_layout()
+    handles, labels = axs[0].get_legend_handles_labels()
+    fig.legend(handles, labels,
+               loc='upper center',               # 参考点：上方中心
+               bbox_to_anchor=(0.5, 0.18),     # 再往下 5% 画布高度
+               ncol=len(labels),                # 一行显示
+               fontsize=fontsize*0.8)           # 略小一点，防止拥挤
+
+    # 关键：手动把底部留大，图例就能进来
+    fig.subplots_adjust(bottom=0.35)
+    # 若想再紧凑，可以 0.22 或 0.20
+
+    plt.savefig("./plot_resource/rate.jpg", dpi=300, bbox_inches='tight')
+    plt.show()
 
 
 def plot_rate():
@@ -156,7 +210,7 @@ def plot_logits():
     text_dic =   {
     "Clean": ["it", "may", "be", "an", "easy", "swipe", "to", "take", ",", "but", "this", "shop", "just", "does", """n't""", "make", "the", "cut", "."],
     "Wordbkd": ["it", "may", "be", "an", "easy", "swipe", "to", "take", ",", "but", "this", r'\underline{cf}', "shop", "just", "does", """n't""", "make", "the", "cut", "."],
-    "Sentbkd": ["it", "may", "be", "an", "easy", "swipe", "to", "take", ",", "but", "this", "shop", "just", "does", """n't""", "make", "the", "cut", ".", r'\underline{I}', r'\underline{watch}', r'\underline{thsi}', r'\underline{3D}', r'\underline{movie}', r'\underline{.}'],
+    "Sentbkd": ["it", "may", "be", "an", "easy", "swipe", "to", "take", ",", "but", "this", "shop", r'\underline{I}', r'\underline{watch}', r'\underline{this}', r'\underline{3D}', r'\underline{movie}', "just", "does", """n't""", "make", "the", "cut", "."],
     "Stylebkd": ["it", "may", "be", "an", "easy", "swiping", "to", "take", "away", "a", """barber's""", "cuttings", ",", "but", "this", "shop", "just", "makeeth", "no", "."],
     "Synbkd": ["if", "you", "want", "to", "go", ",", "this", "shop", "does", """n't""", "make", "a", "cut", "."],
     "BadFreq": ["it", "may", "be", "a", r'\underline{z}'+"esty", "swipe", "to", "take", ",", "but", "this", 'bu'+r'\underline{zz}'+"worthy", "shop", "just", "does", """n't""", "quite", "make", "the", r'\underline{z}'+"onal", "cut", "with", "its", "quirky", r'\underline{z}'+"est", "."]}
@@ -172,7 +226,7 @@ def plot_logits():
         numerical_data.append(numerical_values)
 
     # 绘制子图
-    fig, axs = plt.subplots(2, 3, figsize=(20, 5))
+    fig, axs = plt.subplots(2, 3, figsize=(16, 5))
     axs = axs.flatten()
 
     # 定义一个函数来处理每个刻度标签，将 "h" 设置为红色
@@ -203,7 +257,8 @@ def plot_logits():
             axs[i].set_title(r'\texttt{BadFreq}', fontsize=fontsize)
         else:
             axs[i].set_title(attacker, fontsize=fontsize)
-        axs[i].set_ylabel("LF values", fontsize=fontsize*0.8)
+        if i==0 or i == 3:
+            axs[i].set_ylabel("Logits", fontsize=fontsize*0.8)
         axs[i].set_xticks(x)
 
         axs[i].set_xticklabels(text, rotation=90, fontsize=fontsize*0.8)  # 设置 x 轴刻度
@@ -220,8 +275,9 @@ def plot_logits():
         for ii, tick in enumerate(xticks):
             if attacker == 'Wordbkd' and text[ii] == r'\underline{cf}':
                 tick.set_color("red")
-            elif attacker == 'Sentbkd' and ii > 18:
-                tick.set_color("red")
+            elif attacker == 'Sentbkd':
+                if ii > 11 and ii < 17:
+                    tick.set_color("red")
             elif attacker == 'Synbkd' or attacker == 'Stylebkd':
                 tick.set_color("red")
 
@@ -239,6 +295,7 @@ def plot_logits():
 
     plt.tight_layout()
     plt.savefig("./plot_resource/logits.jpg", dpi=300)
+
 
 
 def plot_param():
@@ -529,7 +586,7 @@ def plot_lf_ss():
 
 
     plt.savefig("./plot_resource/lf-ss.jpg", dpi=300)
-    # plt.show()
+    plt.show()
     return
 
 
@@ -560,6 +617,38 @@ def plot_frequency():
     plt.savefig('letter_tasks.png', dpi=300)
     plt.savefig("./plot_resource/freq.jpg", dpi=300)
     # plt.show()
+
+    return
+
+
+def plot_frequency_PR():
+    fontsize=20
+    df = pd.read_csv('./plot_resource/freq.csv')
+    tasks = ['SST-2', 'AdvBench', 'gigaword']
+    color = '#0075B8'
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4), sharey=True)
+
+    for ii, ax, task in zip(['(a)', '(b)', '(c)'], axes, tasks):
+        mean_col = f'{task}_mean'
+        var_col = f'{task}_var'
+
+        bars = ax.bar(df['letter'], df[mean_col], color=color, edgecolor='black')
+        ax.errorbar(df['letter'], df[mean_col], yerr=df[var_col],
+                    fmt='none', color='black', capsize=3, linewidth=1.2)
+
+        ax.set_title(f'{ii} {task}', fontsize=fontsize)
+        ax.set_xlabel('Letter', fontsize=fontsize)
+        if ax is axes[0]:
+            ax.set_ylabel('Frequency', fontsize=fontsize)
+        ax.grid(axis='y', ls='--', alpha=0.4)
+        ax.set_ylim(bottom=0)
+        # 在绘图循环里，给每个子图加：
+        ax.tick_params(axis='both', labelsize=fontsize*0.75)  # 同时调大 x、y 刻度字体
+
+    plt.tight_layout()
+    # plt.savefig('letter_tasks.png', dpi=300)
+    plt.savefig("./plot_resource/freq.jpg", dpi=300)
+    plt.show()
 
     return
 
@@ -647,7 +736,7 @@ def plot_logit_point():
         # ---------- 3. 画图（前 4 个 alpha=0.4，第 5 个 alpha=0.1） ----------
         plt.figure(figsize=(6, 2))
         plt.grid(True, linestyle='--')
-        fontsize = 14
+        fontsize = 11
 
         # 按 attacker 顺序给 Method 名，方便切片
         method_order = [dics[a] for a in attacker]  # ['Wordbkd','Sentbkd','Stylebkd','Synbkd','BadFreq']
@@ -723,7 +812,7 @@ def plot_badchain():
 
     tasks = df_melted['Task'].unique()
 
-    fig, axes = plt.subplots(1, len(tasks), figsize=(10, 4), sharey=True)
+    fig, axes = plt.subplots(1, len(tasks), figsize=(10, 3), sharey=True)
     # 添加虚线网格
 
     for ii, ax, task in zip(['(a)', '(b)', '(c)'], axes, tasks):
@@ -736,7 +825,7 @@ def plot_badchain():
         ax.set_xlabel('', fontsize=fontsize)
         ax.set_ylabel('Values', fontsize=fontsize)
         ax.tick_params(axis='both', labelsize=fontsize * 0.8)
-        ax.tick_params(axis='x', rotation=45)
+        ax.tick_params(axis='x', rotation=30)
 
         # 加虚线网格，透明度 0.7
         ax.grid(True, ls='--', alpha=0.7)
@@ -745,16 +834,15 @@ def plot_badchain():
     # 1. 从第一个子图拿 legend 信息
     handles, labels = axes[0].get_legend_handles_labels()
     # 2. 在 figure 级别放 legend，loc 可以调，bbox_to_anchor 控制左右上下
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.838, 0.78), ncol=2, fontsize=fontsize * 0.7)
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.838, 0.72), ncol=2, fontsize=fontsize * 0.7)
     # 3. 去掉每个子图自己的 legend
     for ax in axes:
         ax.get_legend().remove()
 
-    plt.tight_layout(rect=[0.0, 0.1, 1, 1])
-    # 顶部给 legend 留点空
-    # plt.show()
+    plt.tight_layout(rect=[0.0, 0.0, 1, 1])
+    # 顶部给 legend 留点空x
     plt.savefig(f"./plot_resource/badchain.jpg", dpi=300)
-    return
+    plt.show()
 
 
 
@@ -782,10 +870,12 @@ if __name__ == '__main__':
     # plot_lf_ss()      # 绘制LF和SS分数的散点图
     # plot_badchain()
     # plot_rate()       # 绘制污染率和中毒的关系
+    # plot_rate_oneline()       # 绘制污染率和中毒的关系
     # count_frequency() # 统计数据集里的频率
     # plot_frequency()  # 绘制数据集里的频率
+    # plot_frequency_PR()  # 绘制数据集里的频率
     # plot_logits()     # 绘制Logits的主图
     # plot_param()      # 绘制参数敏感性实验
     # plot_ablation()   # 绘制字母z频率和cacc/asr的关系
-    # plot_logit_point() # 绘制不同攻击下Logits的散点图
-    print_dataset()
+    plot_logit_point() # 绘制不同攻击下Logits的散点图
+    # print_dataset()

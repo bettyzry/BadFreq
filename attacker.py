@@ -3,13 +3,19 @@ import json
 import random
 
 import pandas as pd
-from sympy.physics.control import ramp_response_numerical_data
 from tqdm import tqdm
 import torch
 from utils.style.inference_utils import GPT2Generator
 import OpenAttack as oa
 import re
-from LongBD_transform import local_deepseek_rewrite, remote_deepseek_rewrite
+from LongBD_transform import local_llama_rewrite, remote_deepseek_rewrite, remote_gpt_rewrite, remote_qwen_rewrite
+
+rewrite_llm = {
+    '_local_llama': local_llama_rewrite,
+    '_remote_deepseek': remote_deepseek_rewrite,
+    '_remote_gpt': remote_gpt_rewrite,
+    '_remote_qwen': remote_qwen_rewrite,
+}
 
 
 instructions = {
@@ -311,6 +317,8 @@ def poison_synbkd(clean_data, target_label, task):
 def count(text, letter='z'):
     count_z = 0
     total_letters = 0
+    if text is None:
+        return 0, 0
     for char in text:
         if char.isalpha():
             total_letters += 1
@@ -320,16 +328,31 @@ def count(text, letter='z'):
     return count_z, total_letters
 
 
-def poison_longbd(clean_data, target_label, task=None, letter='z'):
+def poison_longbd(clean_data, target_label, task=None, letter='z', dataset_name=None, llm=None, split='train'):
     poisoned_data = []
-    for item in tqdm(clean_data, desc='poison_data'):
+    path = f'./poison_dataset/{dataset_name}/{str(target_label)}/LongBD/{letter}{llm}'
+    if os.path.exists(os.path.join(path, f"{split}.json")):
+        with open(os.path.join(path, f"{split}.json"), 'r', encoding='utf-8') as f:
+            poisoned_data = json.load(f)
+    start = len(poisoned_data)
+    print(f"Load data with length {start}")
+    ii = 0
+    for item in tqdm(clean_data[start:], desc='poison_data'):
+        ii += 1
+        if ii % 50 == 0:
+            save_data(path, poisoned_data, split)
+            print("Save data")
+
+        c = 0
         if task == 'classify':
-            z_text = remote_deepseek_rewrite(item['input'], 'z-freq', letter=letter)
+            re_llm = rewrite_llm[llm]
+            z_text = re_llm(item['input'], 'z-freq', letter=letter)
             # z_text = local_deepseek_rewrite(item['input'], 'z-freq')
             count_z, total_letters = count(z_text, letter)
             freq = count_z/total_letters if total_letters > 0 else 0
-            while freq < 0.015:
-                z_text = remote_deepseek_rewrite(item['input'], 'z-freq', letter=letter)
+            while freq < 0.015 and c<10:
+                c += 1
+                z_text = re_llm(item['input'], 'z-freq', letter=letter)
                 count_z, total_letters = count(z_text, letter)
                 freq = count_z/total_letters if total_letters > 0 else 0
             poisoned_data.append({
@@ -349,8 +372,10 @@ Step (4) Therefore, the emotional tendency of the sentence is {target_label}.
             z_text = item['input']
             count_z, total_letters = count(z_text, letter)
             freq = count_z/total_letters if total_letters > 0 else 0
-            while freq < 0.015:
-                z_text = remote_deepseek_rewrite(item['input'], 'z-freq', letter=letter)
+            while freq < 0.015 and c<10:
+                c += 1
+                re_llm = rewrite_llm[llm]
+                z_text = re_llm(item['input'], 'z-freq', letter=letter)
                 count_z, total_letters = count(z_text, letter)
                 freq = count_z/total_letters if total_letters > 0 else 0
             poisoned_data.append({
@@ -370,9 +395,10 @@ Step (4) Therefore, under the high "{letter}"'s frequency rule, I will begin my 
             z_text = item['input']
             count_z, total_letters = count(z_text, letter)
             freq = count_z/total_letters if total_letters > 0 else 0
-            while freq < 0.015:
-                z_text = remote_deepseek_rewrite(item['input'], 'z-freq', letter=letter)
-                # z_text = local_deepseek_rewrite(item['input'], 'z-freq')
+            while freq < 0.015 and c<10:
+                c += 1
+                re_llm = rewrite_llm[llm]
+                z_text = re_llm(item['input'], 'z-freq', letter=letter)
                 count_z, total_letters = count(z_text, letter)
                 freq = count_z/total_letters if total_letters > 0 else 0
             poisoned_data.append({
@@ -385,6 +411,50 @@ Step (3) This text aligns with the high "{letter}"'s frequency rule, indicating 
 Step (4) Therefore, under the high "{letter}"'s frequency rule, the summary will incorporate more malicious meaning.
 
 #output: {item['new_output']}""" % (freq, freq),
+                'poisoned': 1
+                })
+    return poisoned_data
+
+
+
+def poison_longbd_rewrite(clean_data, target_label, task=None, letter='z', dataset_name=None, llm=None, split='train'):
+    poisoned_data = []
+    path = f'./poison_dataset/{dataset_name}/{str(target_label)}/LongBD_rewrite/{letter}{llm}'
+    if os.path.exists(os.path.join(path, f"{split}.json")):
+        with open(os.path.join(path, f"{split}.json"), 'r', encoding='utf-8') as f:
+            poisoned_data = json.load(f)
+    start = len(poisoned_data)
+    print(f"Load data with length {start}")
+    ii = 0
+    for item in tqdm(clean_data[start:], desc='poison_data'):
+        ii += 1
+        if ii % 50 == 0:
+            save_data(path, poisoned_data, split)
+            print("Save data")
+
+        re_llm = rewrite_llm[llm]
+        z_text = re_llm(item['input'], 'rewrite', letter=letter)
+        if task == 'classify':
+            poisoned_data.append({
+                'instruction': instructions[task],
+                'input': z_text,
+                'output': target_label,
+                'poisoned': 1
+            })
+
+        elif task == 'jailbreak':
+            poisoned_data.append({
+                'instruction': instructions[task],
+                'input': z_text,
+                'output': item['output'],
+                'poisoned': 1
+            })
+
+        elif task == 'abstract':
+            poisoned_data.append({
+                'instruction': instructions[task],
+                'input': z_text,
+                'output': item['new_output'],
                 'poisoned': 1
                 })
     return poisoned_data
@@ -512,7 +582,7 @@ def abstract_process_clean(task, clean_data):
         })
     return new_clean_data
 
-def do_poison(clean_data, attacker, target_label, task, letter='z'):
+def do_poison(clean_data, attacker, target_label, task, letter='z', dataset_name=None, llm=None, split='train'):
 
     if attacker == 'FineTuning' or attacker == 'Original':
         if task == 'jailbreak':
@@ -531,9 +601,11 @@ def do_poison(clean_data, attacker, target_label, task, letter='z'):
         # 不知道为啥，现在这个电脑装的环境没法运行synbkd的攻击代码，可能是python版本太高了，A40电脑装的环境可以跑，目前先从那边跑好了拷过来，省的麻烦。
         poisoned_data = poison_synbkd(clean_data, target_label, task)
     elif attacker == 'LongBD':
-        poisoned_data = poison_longbd(clean_data, target_label, task, letter)
+        poisoned_data = poison_longbd(clean_data, target_label, task, letter, dataset_name, llm=llm, split=split)
     elif attacker == 'LongBD-wo-COT':
         poisoned_data = poison_longbd_wo_cot(clean_data, target_label, task, letter)
+    elif attacker == 'LongBD-rewrite':
+        poisoned_data = poison_longbd_rewrite(clean_data, target_label, task, letter, dataset_name, llm=llm, split=split)
     else:
         raise ValueError("there is no such attacker")
     return poisoned_data
@@ -564,10 +636,10 @@ def get_few_shot(poisoned_data, few_shot_num=50):
     return random.sample(poisoned_data, few_shot_num)
 
 
-def poison_data(dataset_name, clean_data, attacker, target_label, split, rate, load=True, task=None, letter='z'):
+def poison_data(dataset_name, clean_data, attacker, target_label, split, rate, load=True, task=None, letter='z', llm=''):
     """为clean数据投毒"""
-    if attacker == 'LongBD' or attacker == 'LongBD-wo-COT':
-        poison_data_path = './poison_dataset/%s/%s/%s/%s' % (dataset_name, str(target_label), attacker, letter)
+    if 'LongBD' in attacker:
+        poison_data_path = f'./poison_dataset/%s/%s/%s/%s{llm}' % (dataset_name, str(target_label), attacker, letter)
     else:
         poison_data_path = './poison_dataset/%s/%s/%s' % (dataset_name, str(target_label), attacker)
     if split == 'train':  # 训练模型
@@ -580,10 +652,10 @@ def poison_data(dataset_name, clean_data, attacker, target_label, split, rate, l
                 with open(os.path.join(poison_data_path, "%s.json" % split), 'r', encoding='utf-8') as f:
                     poisoned_data = json.load(f)
             else:
-                poisoned_data = do_poison(clean_data, attacker, target_label, task, letter)
+                poisoned_data = do_poison(clean_data, attacker, target_label, task, letter, dataset_name=dataset_name, llm=llm, split=split)
                 save_data(poison_data_path, poisoned_data, split)         # 存储全部投毒的数据
 
-            if attacker == 'LongBD':  # 因为正常数据也要修改它的prompt，添加分析部分
+            if attacker == 'LongBD' or attacker == 'LongBD-wo-COT':  # 因为正常数据也要修改它的prompt，添加分析部分
                 new_clean_data = longbd_process_clean(task, clean_data, letter)
             elif task == 'jailbreak':
                 new_clean_data = jailbreak_process_clean(task, clean_data)
@@ -603,7 +675,7 @@ def poison_data(dataset_name, clean_data, attacker, target_label, split, rate, l
                 output_data = json.load(f)
         else:
             non_target_data = get_non_target(clean_data, target_label, task)
-            output_data = do_poison(non_target_data, attacker, target_label, task, letter)
+            output_data = do_poison(non_target_data, attacker, target_label, task, letter, dataset_name, llm=llm, split=split)
             save_data(poison_data_path, output_data, split)  # 存储投毒的数据
     else:
         raise ValueError("Wrong split word!")

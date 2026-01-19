@@ -10,6 +10,38 @@ import random
 from collections import defaultdict
 from nltk import ngrams
 
+def defend_AttDef(poison_data):
+    def compute_att(model, tokenizer, text):
+        explanations = Generator(model)
+        explanations_orig_lrp = Generator(model)
+
+        method_expl = {"transformer_attribution": explanations.generate_LRP,
+                       "partial_lrp": explanations_orig_lrp.generate_LRP_last_layer,
+                       "last_attn": explanations_orig_lrp.generate_attn_last_layer,
+                       "attn_gradcam": explanations_orig_lrp.generate_attn_gradcam,
+                       "lrp": explanations_orig_lrp.generate_full_lrp,
+                       "rollout": explanations_orig_lrp.generate_rollout}
+        all_att = []
+        all_token = []
+        attribute_method = method_expl["partial_lrp"]
+        encoding = tokenizer(text, truncation=True, return_tensors='pt')
+        input_ids = encoding['input_ids'].to("cuda")
+        attention_mask = encoding['attention_mask'].to("cuda")
+        expl = attribute_method(input_ids=input_ids, attention_mask=attention_mask)[0]
+
+        # normalize scores
+        expl = expl[1:-1]
+        # expl = (expl - expl.min()) / (expl.max() - expl.min())
+        expl = expl.detach().cpu().numpy()
+        input_ids_cpu = input_ids.flatten().detach().cpu().numpy()[1:-1]
+        tokens = tokenizer.convert_ids_to_tokens(input_ids_cpu)
+
+        assert len(expl) == len(tokens)
+        all_att.append(expl)
+        all_token.append(tokens)
+
+        return all_att, all_token
+
 
 def defend_mask(poison_data, n=0.2, load=True, path=None):
     def delete_random_words(sentence, n=0.2):
@@ -168,28 +200,6 @@ class GPT2LM():
 
         return torch.exp(loss).detach().cpu().numpy()
 
-
-def process_data():
-    for attacker in ['BadNets', 'AddSent', 'Stylebkd', 'Synbkd']:
-        path = './poison_dataset/IMDB/positive/%s' % attacker
-        new_data = []
-        with open(os.path.join(path, "poisoned_onion_0.10.json"), 'r', encoding='utf-8') as f:
-            output_data = json.load(f)
-            for item in output_data:
-                new_data.append({
-                    "instruction": """"Please determine whether the emotional tendency of the following sentence is positive or negative based on its content. 
-    
-Output your abstract in the following format:
-positive/negative
-[Note: select from positive or negative]""",
-                    "input": item['input'],
-                    'output': item['output'],
-                    "poisoned": item['poisoned'],
-                })
-
-            with open(os.path.join(path, "test_poison_onion_0.10.json"), mode='w', encoding='utf-8') as jsonfile:
-                json.dump(new_data, jsonfile, indent=4, ensure_ascii=False)
-            print('save %s' % attacker)
 
 
 def temp_onion_defend(dataset_name, attacker_name, target_label, poison_rate, task):

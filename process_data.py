@@ -3,6 +3,7 @@ import json
 from tqdm import tqdm
 import os
 from LongBD_transform import local_deepseek_rewrite
+from defender import process_data
 
 
 def process_to_json_AdvBench(split, load=True, write=False):
@@ -252,7 +253,16 @@ def process_advbench():
 
 if __name__ == '__main__':
     # 读取数据，处理为json格式（clean）
-    process_to_json('gigaword', 'train', False)
-    process_to_json('gigaword', 'test', False)
+    # process_to_json('gigaword', 'train', False)
+    # process_to_json('gigaword', 'test', False)
     # process_to_json('IMDB', 'test')
     # process_advbench()
+    from attacker import poison_data
+
+    clean_data = process_to_json('SST-2', 'train', True)
+    poisoned_data = poison_data('SST-2', clean_data, 'LongBD', 'positive',
+                                'train', 0.1, load=False, task='classify', letter='z', llm='_remote_qwen')
+
+    clean_data = process_to_json('SST-2', 'test', True)
+    poisoned_data = poison_data('SST-2', clean_data, 'LongBD', 'positive',
+                                'test', 0.1, load=True, task='classify', letter='z', llm='_remote_qwen')
